@@ -1,2 +1,2 @@
 # odoo-Hackathon
-Odoo Hackathon 2026 - team project built with Python and Django
+Odoo Hackathon 2026 - Team Project built with Python and Django
