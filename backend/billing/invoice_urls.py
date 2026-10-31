@@ -13,5 +13,5 @@ urlpatterns = [
     path("invoices/<int:pk>/confirm/", invoice_views.InvoiceConfirmView.as_view(), name="invoice-confirm"),
     path("invoices/<int:pk>/cancel/", invoice_views.InvoiceCancelView.as_view(), name="invoice-cancel"),
     path("invoices/<int:pk>/send/", invoice_views.InvoiceSendView.as_view(), name="invoice-send"),
+    path("invoices/<int:pk>/print/", invoice_views.InvoicePrintView.as_view(), name="invoice-print"),
 ]
-
