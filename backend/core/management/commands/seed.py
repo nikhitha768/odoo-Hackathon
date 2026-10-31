@@ -307,7 +307,7 @@ class Command(BaseCommand):
                 "discount": discount,
             },
         )
-        InvoiceLine.objects.get_or_create(
+        InvoiceLine.objects.update_or_create(
             invoice=inv_1,
             product=product_seats,
             defaults={
@@ -317,7 +317,7 @@ class Command(BaseCommand):
                 "discount_amount": Decimal("780.00"),
                 "tax_rate_percent": Decimal("18.00"),
                 "tax_amount": Decimal("1263.60"),
-                "amount": Decimal("7283.60"),
+                "amount": Decimal("8283.60"),
             },
         )
 
@@ -339,7 +339,7 @@ class Command(BaseCommand):
                 "discount": discount,
             },
         )
-        InvoiceLine.objects.get_or_create(
+        InvoiceLine.objects.update_or_create(
             invoice=inv_2,
             product=product_seats,
             defaults={
@@ -349,7 +349,7 @@ class Command(BaseCommand):
                 "discount_amount": Decimal("780.00"),
                 "tax_rate_percent": Decimal("18.00"),
                 "tax_amount": Decimal("1263.60"),
-                "amount": Decimal("7283.60"),
+                "amount": Decimal("8283.60"),
             },
         )
         Payment.objects.get_or_create(
