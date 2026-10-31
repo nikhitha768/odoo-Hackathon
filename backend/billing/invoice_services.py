@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F, Q, prefetch_related_objects
 from django.utils import timezone
 
 from billing.models import Invoice, InvoiceLine
@@ -232,9 +232,7 @@ def calculate_invoice_totals_and_lines(
                 }
             )
     else:
-        sub_lines = subscription.lines.select_related(
-            "product", "product__default_tax", "tax"
-        )
+        sub_lines = subscription.lines.all()
         for sub_line in sub_lines:
             qty = sub_line.quantity
             unit_price = Decimal(str(sub_line.unit_price))
@@ -338,6 +336,15 @@ def generate_invoice_for_subscription(
     if subscription.status != Subscription.Status.ACTIVE:
         raise ValidationError("Only active subscriptions can be invoiced.")
 
+    prefetch_related_objects(
+        [subscription],
+        "lines",
+        "lines__product",
+        "lines__product__default_tax",
+        "lines__variant",
+        "lines__tax",
+    )
+
     billing_period = getattr(subscription.plan, "billing_period", "monthly")
     period_start = period_start or subscription.next_invoice_date
     period_end = period_end or calculate_period_end(period_start, billing_period)
@@ -375,8 +382,10 @@ def generate_invoice_for_subscription(
             discount=applied_discount,
         )
 
-        for line_kwargs in calculation["lines_to_create"]:
-            InvoiceLine.objects.create(invoice=invoice, **line_kwargs)
+        InvoiceLine.objects.bulk_create([
+            InvoiceLine(invoice=invoice, **line_kwargs)
+            for line_kwargs in calculation["lines_to_create"]
+        ])
 
         if applied_discount:
             Discount.objects.filter(pk=applied_discount.pk).update(times_used=F("times_used") + 1)
