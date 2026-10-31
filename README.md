@@ -11,6 +11,9 @@ Subscription Management System for Brightloop Software (Django REST backend + Re
 - **CORS**: `django-cors-headers`
 - **Frontend**: React 19, Vite, React Router, Material UI (MUI), Axios
 
+### Why SQLite
+Zero-setup local relational database, with constraints and indexes defined in the models.
+
 ---
 
 ## Features
@@ -86,6 +89,7 @@ From the project root folder in Windows Command Prompt (`cmd`):
 python -m venv venv
 venv\Scripts\activate
 pip install -r backend/requirements.txt
+copy backend\.env.example backend\.env
 cd backend
 python manage.py migrate
 python manage.py seed
