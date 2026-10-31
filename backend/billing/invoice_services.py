@@ -1,5 +1,6 @@
 """Business logic and services for Invoices, bulk generation, discounts, and notifications."""
 
+import calendar
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -22,23 +23,67 @@ def advance_date_by_period(current_date, billing_period):
     elif billing_period == "weekly":
         return current_date + timedelta(days=7)
     elif billing_period == "monthly":
-        return current_date + timedelta(days=30)
+        year = current_date.year
+        month = current_date.month + 1
+        if month > 12:
+            year += 1
+            month = 1
+        max_day = calendar.monthrange(year, month)[1]
+        day = min(current_date.day, max_day)
+        return date(year, month, day)
     elif billing_period == "yearly":
-        return current_date + timedelta(days=365)
+        year = current_date.year + 1
+        month = current_date.month
+        max_day = calendar.monthrange(year, month)[1]
+        day = min(current_date.day, max_day)
+        return date(year, month, day)
     return current_date + timedelta(days=30)
 
 
 def calculate_period_end(period_start, billing_period):
-    """Compute period end date based on recurrence interval."""
-    if billing_period == "daily":
-        return period_start
-    elif billing_period == "weekly":
-        return period_start + timedelta(days=6)
-    elif billing_period == "monthly":
-        return period_start + timedelta(days=30)
-    elif billing_period == "yearly":
-        return period_start + timedelta(days=364)
-    return period_start + timedelta(days=30)
+    """
+    Compute period end date based on recurrence interval.
+    period_end is the day before the next period starts,
+    so consecutive invoices never overlap or leave a gap.
+    For a monthly plan starting Nov 1, the period is Nov 1 to Nov 30.
+    """
+    next_period_start = advance_date_by_period(period_start, billing_period)
+    return next_period_start - timedelta(days=1)
+
+
+def is_already_invoiced_for_period(
+    subscription, period_start, period_end=None, existing_invoices_cache=None
+):
+    """
+    Checks whether a non-cancelled invoice already exists for this subscription and period.
+    Matches exact period_start or overlapping date ranges.
+    """
+    if existing_invoices_cache is not None:
+        for inv in existing_invoices_cache:
+            if inv["subscription_id"] == subscription.id:
+                if inv["period_start"] == period_start:
+                    return True
+                if period_end and inv.get("period_end"):
+                    if inv["period_start"] <= period_end and period_start <= inv["period_end"]:
+                        return True
+                else:
+                    if inv["period_start"] <= period_start <= inv.get("period_end", period_start):
+                        return True
+        return False
+
+    qs = Invoice.objects.filter(subscription=subscription).exclude(
+        status=Invoice.Status.CANCELLED
+    )
+    if period_end:
+        return qs.filter(
+            Q(period_start=period_start)
+            | (Q(period_start__lte=period_end) & Q(period_end__gte=period_start))
+        ).exists()
+    else:
+        return qs.filter(
+            Q(period_start=period_start)
+            | (Q(period_start__lte=period_start) & Q(period_end__gte=period_start))
+        ).exists()
 
 
 def evaluate_discount_eligibility(discount, lines_data, as_of_date=None):
@@ -287,6 +332,7 @@ def generate_invoice_for_subscription(
     """
     Creates an Invoice and InvoiceLines for an Active subscription.
     Enforces 'never bill twice' constraint and increments discount.times_used via F().
+    period_end is the day before the next period starts.
     """
     # 1. Only subscriptions in Active status can be invoiced
     if subscription.status != Subscription.Status.ACTIVE:
@@ -300,12 +346,7 @@ def generate_invoice_for_subscription(
     due_date = due_date or (issue_date + timedelta(days=payment_term_days))
 
     # 2. Never bill twice for the same subscription and period
-    existing = (
-        Invoice.objects.filter(subscription=subscription, period_start=period_start)
-        .exclude(status=Invoice.Status.CANCELLED)
-        .first()
-    )
-    if existing:
+    if is_already_invoiced_for_period(subscription, period_start, period_end):
         raise ValidationError("An active invoice for this subscription and period already exists.")
 
     calculation = calculate_invoice_totals_and_lines(
@@ -368,10 +409,10 @@ def bulk_generate_invoices(as_of_date=None):
         .order_by("id")
     )
 
-    existing_periods = set(
+    existing_invoices_cache = list(
         Invoice.objects.filter(subscription__in=subscriptions)
         .exclude(status=Invoice.Status.CANCELLED)
-        .values_list("subscription_id", "period_start")
+        .values("subscription_id", "period_start", "period_end")
     )
 
     created_ids = []
@@ -381,7 +422,15 @@ def bulk_generate_invoices(as_of_date=None):
 
     for sub in subscriptions:
         period_start = sub.next_invoice_date
-        if (sub.id, period_start) in existing_periods:
+        billing_period = getattr(sub.plan, "billing_period", "monthly")
+        period_end = calculate_period_end(period_start, billing_period)
+
+        if is_already_invoiced_for_period(
+            subscription=sub,
+            period_start=period_start,
+            period_end=period_end,
+            existing_invoices_cache=existing_invoices_cache,
+        ):
             skipped += 1
             reasons.append(
                 {
@@ -397,13 +446,22 @@ def bulk_generate_invoices(as_of_date=None):
                 invoice = generate_invoice_for_subscription(
                     subscription=sub,
                     period_start=period_start,
+                    period_end=period_end,
                     issue_date=as_of_date,
                 )
                 created_ids.append(invoice.id)
                 created += 1
 
+                # Update cache so subsequent checks in the same run know this invoice exists
+                existing_invoices_cache.append(
+                    {
+                        "subscription_id": sub.id,
+                        "period_start": period_start,
+                        "period_end": period_end,
+                    }
+                )
+
                 # Advance next_invoice_date by plan's billing period
-                billing_period = getattr(sub.plan, "billing_period", "monthly")
                 sub.next_invoice_date = advance_date_by_period(
                     sub.next_invoice_date, billing_period
                 )
@@ -459,4 +517,3 @@ def send_invoice_email(invoice):
             pass
 
     return invoice
-

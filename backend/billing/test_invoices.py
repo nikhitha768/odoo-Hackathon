@@ -684,3 +684,209 @@ class InvoiceAPITests(APITestCase):
         self.assertNotIn(overdue_inv.id, returned_ids_false)
         self.assertIn(paid_inv.id, returned_ids_false)
         self.assertIn(future_inv.id, returned_ids_false)
+
+    # -----------------------------------------------------------------------
+    # 12. Period calculation and consecutive invoices for each billing period
+    # -----------------------------------------------------------------------
+
+    def test_period_end_and_consecutive_invoices_for_all_billing_periods(self):
+        """
+        period_end must be the day before the next period starts so consecutive
+        invoices never overlap or leave a gap across daily, weekly, monthly, and yearly plans.
+        """
+        self.client.force_authenticate(user=self.staff_user)
+
+        periods_data = [
+            (
+                Plan.BillingPeriod.DAILY,
+                date(2026, 11, 1),
+                date(2026, 11, 1),   # period 1 end
+                date(2026, 11, 2),   # period 2 start
+                date(2026, 11, 2),   # period 2 end
+            ),
+            (
+                Plan.BillingPeriod.WEEKLY,
+                date(2026, 11, 1),
+                date(2026, 11, 7),   # period 1 end
+                date(2026, 11, 8),   # period 2 start
+                date(2026, 11, 14),  # period 2 end
+            ),
+            (
+                Plan.BillingPeriod.MONTHLY,
+                date(2026, 11, 1),
+                date(2026, 11, 30),  # period 1 end
+                date(2026, 12, 1),   # period 2 start
+                date(2026, 12, 31),  # period 2 end
+            ),
+            (
+                Plan.BillingPeriod.YEARLY,
+                date(2026, 11, 1),
+                date(2027, 10, 31),  # period 1 end
+                date(2027, 11, 1),   # period 2 start
+                date(2028, 10, 31),  # period 2 end
+            ),
+        ]
+
+        for period_choice, start1, end1, start2, end2 in periods_data:
+            with self.subTest(billing_period=period_choice):
+                plan = Plan.objects.create(
+                    name=f"Plan {period_choice}",
+                    price=Decimal("100.00"),
+                    billing_period=period_choice,
+                    available_from=date(2026, 1, 1),
+                )
+                sub = Subscription.objects.create(
+                    customer=self.customer_a,
+                    plan=plan,
+                    start_date=start1,
+                    expiry_date=date(2030, 12, 31),
+                    payment_term_days=15,
+                    next_invoice_date=start1,
+                    status=Subscription.Status.ACTIVE,
+                )
+                SubscriptionLine.objects.create(
+                    subscription=sub,
+                    product=self.product_b,
+                    quantity=1,
+                    unit_price=Decimal("50.00"),
+                    amount=Decimal("50.00"),
+                )
+
+                # Invoice 1
+                res1 = self.client.post(
+                    "/api/invoices/",
+                    {"subscription": sub.id, "period_start": start1.isoformat()},
+                    format="json",
+                )
+                self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+                self.assertEqual(res1.data["period_start"], start1.isoformat())
+                self.assertEqual(res1.data["period_end"], end1.isoformat())
+
+                # Invoice 2 (consecutive)
+                res2 = self.client.post(
+                    "/api/invoices/",
+                    {"subscription": sub.id, "period_start": start2.isoformat()},
+                    format="json",
+                )
+                self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
+                self.assertEqual(res2.data["period_start"], start2.isoformat())
+                self.assertEqual(res2.data["period_end"], end2.isoformat())
+
+                # Verify continuity: end1 + 1 day == start2 (never overlap, never leave a gap)
+                self.assertEqual(end1 + timedelta(days=1), start2)
+                # Verify end2 is greater than start2
+                self.assertGreaterEqual(end2, start2)
+
+    def test_two_consecutive_invoices_via_bulk_billing_run(self):
+        """Two consecutive bulk billing runs generate consecutive non-overlapping invoices."""
+        self.client.force_authenticate(user=self.staff_user)
+
+        monthly_plan = Plan.objects.create(
+            name="Consecutive Test Plan",
+            price=Decimal("120.00"),
+            billing_period=Plan.BillingPeriod.MONTHLY,
+            available_from=date(2026, 1, 1),
+        )
+        consec_sub = Subscription.objects.create(
+            customer=self.customer_b,
+            plan=monthly_plan,
+            start_date=date(2026, 11, 1),
+            expiry_date=date(2027, 12, 31),
+            payment_term_days=15,
+            next_invoice_date=date(2026, 11, 1),
+            status=Subscription.Status.ACTIVE,
+        )
+        SubscriptionLine.objects.create(
+            subscription=consec_sub,
+            product=self.product_a,
+            quantity=1,
+            unit_price=Decimal("100.00"),
+            amount=Decimal("100.00"),
+        )
+
+        # Run 1: for Nov 1, 2026
+        res_run1 = self.client.post(
+            "/api/invoices/generate/",
+            {"as_of_date": "2026-11-01"},
+            format="json",
+        )
+        self.assertEqual(res_run1.status_code, status.HTTP_200_OK)
+
+        consec_sub.refresh_from_db()
+        # next_invoice_date should have advanced to Dec 1, 2026
+        self.assertEqual(consec_sub.next_invoice_date, date(2026, 12, 1))
+
+        # Check first invoice
+        inv1 = Invoice.objects.get(subscription=consec_sub, period_start=date(2026, 11, 1))
+        self.assertEqual(inv1.period_end, date(2026, 11, 30))
+
+        # Attempting to re-run on Nov 15 skips (already invoiced for Nov, next_invoice_date is Dec 1 > Nov 15)
+        res_run_mid = self.client.post(
+            "/api/invoices/generate/",
+            {"as_of_date": "2026-11-15"},
+            format="json",
+        )
+        self.assertEqual(res_run_mid.status_code, status.HTTP_200_OK)
+        # No new invoice created for consec_sub
+        self.assertEqual(Invoice.objects.filter(subscription=consec_sub).count(), 1)
+
+        # Run 2: for Dec 1, 2026
+        res_run2 = self.client.post(
+            "/api/invoices/generate/",
+            {"as_of_date": "2026-12-01"},
+            format="json",
+        )
+        self.assertEqual(res_run2.status_code, status.HTTP_200_OK)
+
+        consec_sub.refresh_from_db()
+        self.assertEqual(consec_sub.next_invoice_date, date(2027, 1, 1))
+
+        # Check second invoice
+        inv2 = Invoice.objects.get(subscription=consec_sub, period_start=date(2026, 12, 1))
+        self.assertEqual(inv2.period_end, date(2026, 12, 31))
+
+        # Ensure no overlap and no gap
+        self.assertEqual(inv1.period_end + timedelta(days=1), inv2.period_start)
+
+    def test_already_invoiced_check_with_corrected_period_end(self):
+        """
+        'Already invoiced' check detects duplicate and overlapping periods with corrected end date,
+        while allowing consecutive periods.
+        """
+        self.client.force_authenticate(user=self.staff_user)
+
+        # sub_a already has inv_a for 2026-11-01 to 2026-11-30
+        # Duplicate for exact same period_start
+        res_dup = self.client.post(
+            "/api/invoices/",
+            {"subscription": self.sub_a.id, "period_start": "2026-11-01"},
+            format="json",
+        )
+        self.assertEqual(res_dup.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already exists", res_dup.data["detail"].lower())
+
+        # Overlapping period (e.g. Nov 15 to Dec 14)
+        res_overlap = self.client.post(
+            "/api/invoices/",
+            {
+                "subscription": self.sub_a.id,
+                "period_start": "2026-11-15",
+                "period_end": "2026-12-14",
+            },
+            format="json",
+        )
+        self.assertEqual(res_overlap.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already exists", res_overlap.data["detail"].lower())
+
+        # Consecutive non-overlapping period (Dec 1 to Dec 31) succeeds
+        res_consec = self.client.post(
+            "/api/invoices/",
+            {
+                "subscription": self.sub_a.id,
+                "period_start": "2026-12-01",
+            },
+            format="json",
+        )
+        self.assertEqual(res_consec.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res_consec.data["period_start"], "2026-12-01")
+        self.assertEqual(res_consec.data["period_end"], "2026-12-31")
