@@ -1,4 +1,4 @@
 # ODOO-HACKATHON
 
-Odoo Hackathon 2026 - Team Project built with Python and Django
+Odoo Hackathon 2026 - A Team Project built by NIKHITHA and THEJA 
 
