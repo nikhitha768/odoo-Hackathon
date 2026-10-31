@@ -1,5 +1,6 @@
 """REST API views for authentication, staff administration, and customer discovery."""
 
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
@@ -106,10 +107,18 @@ class PasswordResetRequestView(APIView):
         if user:
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
+            reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+            message = (
+                f"Hello {user.name or 'there'},\n\n"
+                f"You requested a password reset. Please use the following link to reset your password:\n"
+                f"{reset_link}\n\n"
+                f"This link expires in 1 hour.\n\n"
+                f"If you did not request this, ignore this email.\n"
+            )
             send_mail(
                 subject="Brightloop Software Password Reset",
-                message=f"Reset UID: {uid}\nReset Token: {token}\n",
-                from_email="noreply@brightloopsoftware.com",
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
                 fail_silently=False,
             )

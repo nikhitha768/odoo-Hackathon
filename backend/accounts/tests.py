@@ -274,6 +274,10 @@ class AuthEndpointsTests(APITestCase):
 
     # 5. POST /api/auth/password-reset/
     def test_password_reset_existing_email(self):
+        import re
+        from urllib.parse import parse_qs, urlparse
+
+        mail.outbox.clear()
         response = self.client.post(
             "/api/auth/password-reset/",
             {"email": "customer@example.com"},
@@ -285,7 +289,48 @@ class AuthEndpointsTests(APITestCase):
             {"detail": "If the email exists, a reset link was sent."},
         )
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("Password Reset", mail.outbox[0].subject)
+        self.assertEqual(mail.outbox[0].subject, "Brightloop Software Password Reset")
+
+        email_body = mail.outbox[0].body
+        self.assertIn("This link expires in 1 hour", email_body)
+        self.assertIn("If you did not request this, ignore this email.", email_body)
+
+        # Extract uid and token from the link in the body
+        match = re.search(r"https?://[^\s]+/reset-password\?[^\s]+", email_body)
+        self.assertIsNotNone(match, "Reset link not found in email body")
+        reset_link = match.group(0)
+        parsed_url = urlparse(reset_link)
+        query_params = parse_qs(parsed_url.query)
+        self.assertIn("uid", query_params)
+        self.assertIn("token", query_params)
+        uid = query_params["uid"][0]
+        token = query_params["token"][0]
+
+        # Post them with a valid new password to the confirm endpoint
+        new_password = "BrandNewPass1!"
+        confirm_response = self.client.post(
+            "/api/auth/password-reset/confirm/",
+            {
+                "uid": uid,
+                "token": token,
+                "new_password": new_password,
+            },
+            format="json",
+        )
+        self.assertEqual(confirm_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(confirm_response.data, {"detail": "Password updated."})
+
+        # Log in with the new password
+        login_response = self.client.post(
+            "/api/auth/login/",
+            {
+                "email": "customer@example.com",
+                "password": new_password,
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        self.assertIn("token", login_response.data)
 
     def test_password_reset_non_existing_email(self):
         mail.outbox.clear()
