@@ -5,7 +5,7 @@
 export const USE_MOCK =
   typeof import.meta !== 'undefined' && import.meta.env?.VITE_USE_MOCK !== undefined
     ? import.meta.env.VITE_USE_MOCK === 'true'
-    : true
+    : false
 
 export { mockAdapter } from './adapter.js'
 export * from './data.js'

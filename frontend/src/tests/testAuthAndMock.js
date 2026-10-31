@@ -1,12 +1,15 @@
 /* global process */
 import assert from 'node:assert'
 import client from '../api/client.js'
-import { USE_MOCK } from '../mock/index.js'
+import { USE_MOCK, mockAdapter } from '../mock/index.js'
 
 async function runTests() {
   console.log('--- 1. Checking USE_MOCK Flag ---')
-  assert.strictEqual(USE_MOCK, true, 'USE_MOCK flag should be true by default')
-  console.log('✓ USE_MOCK is true')
+  assert.strictEqual(USE_MOCK, false, 'USE_MOCK flag should be false by default')
+  console.log('✓ USE_MOCK is false by default')
+
+  // Attach mockAdapter explicitly for verifying endpoint handlers in isolated unit tests
+  client.defaults.adapter = mockAdapter
 
   console.log('\n--- 2. Testing Auth Endpoints via Mock Client ---')
 
