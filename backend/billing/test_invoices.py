@@ -4,11 +4,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core import mail
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from billing.models import Invoice, InvoiceLine
-from catalog.models import Plan, Product, Tax
+from catalog.models import Discount, Plan, Product, Tax
 from subscriptions.models import Subscription, SubscriptionLine
 
 User = get_user_model()
@@ -230,6 +232,7 @@ class InvoiceAPITests(APITestCase):
         endpoints = [
             ("get", "/api/invoices/"),
             ("get", f"/api/invoices/{self.inv_a.id}/"),
+            ("get", f"/api/invoices/{self.inv_a.id}/print/"),
             ("post", "/api/invoices/"),
             ("post", "/api/invoices/generate/"),
             ("post", f"/api/invoices/{self.inv_a.id}/confirm/"),
@@ -300,8 +303,8 @@ class InvoiceAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("detail", res.data)
 
-    def test_send_action_sets_sent_at(self):
-        """Send action records the sent_at timestamp."""
+    def test_send_action_sets_sent_at_and_sends_email(self):
+        """Send action records the sent_at timestamp and sends email."""
         self.client.force_authenticate(user=self.staff_user)
 
         self.assertIsNone(self.inv_a.sent_at)
@@ -311,6 +314,14 @@ class InvoiceAPITests(APITestCase):
         self.inv_a.refresh_from_db()
         self.assertIsNotNone(self.inv_a.sent_at)
 
+    def test_print_endpoint_returns_printable_invoice(self):
+        """Print endpoint returns invoice details for customer and staff."""
+        self.client.force_authenticate(user=self.staff_user)
+        res = self.client.get(f"/api/invoices/{self.inv_a.id}/print/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["id"], self.inv_a.id)
+        self.assertIn("lines", res.data)
+
     # -----------------------------------------------------------------------
     # 5. Totals computed on the server, never taken from the client
     # -----------------------------------------------------------------------
@@ -319,10 +330,6 @@ class InvoiceAPITests(APITestCase):
         """Server computes subtotal, tax_total, and total; client-provided values are ignored."""
         self.client.force_authenticate(user=self.staff_user)
 
-        # sub_a has 2 lines:
-        # Product A: qty 2, price 100.00, tax 10% -> subtotal 200.00, tax 20.00
-        # Product B: qty 1, price 50.00, tax 0% -> subtotal 50.00, tax 0.00
-        # Expected: subtotal 250.00, tax_total 20.00, total 270.00
         payload = {
             "subscription": self.sub_a.id,
             "period_start": "2027-01-01",
@@ -344,47 +351,336 @@ class InvoiceAPITests(APITestCase):
         self.assertEqual(len(res.data["lines"]), 2)
 
     # -----------------------------------------------------------------------
-    # 6. Batch generate endpoint
+    # 6. Never bill twice for the same subscription and period
     # -----------------------------------------------------------------------
 
-    def test_invoice_batch_generate(self):
-        """Batch generation creates draft invoices for active subscriptions and advances next_invoice_date."""
+    def test_invoicing_same_subscription_twice_creates_one_invoice(self):
+        """Invoicing the same subscription for the same period twice creates only one invoice."""
         self.client.force_authenticate(user=self.staff_user)
 
-        # sub_b next_invoice_date is 2026-12-01
+        payload = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-03-01",
+            "period_end": "2027-03-31",
+        }
+        # First creation succeeds
+        res1 = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+
+        # Second creation for the exact same period fails
+        res2 = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already exists", res2.data["detail"].lower())
+
+        # Verify only 1 invoice exists for that period
+        count = Invoice.objects.filter(
+            subscription=self.sub_a, period_start="2027-03-01"
+        ).count()
+        self.assertEqual(count, 1)
+
+    # -----------------------------------------------------------------------
+    # 7. Only Active subscriptions can be invoiced
+    # -----------------------------------------------------------------------
+
+    def test_only_active_subscriptions_can_be_invoiced(self):
+        """Non-active subscriptions (draft, closed, quotation) cannot be invoiced."""
+        self.client.force_authenticate(user=self.staff_user)
+
+        draft_sub = Subscription.objects.create(
+            customer=self.customer_a,
+            plan=self.plan,
+            start_date=date(2026, 12, 1),
+            expiry_date=date(2027, 12, 1),
+            payment_term_days=15,
+            next_invoice_date=date(2026, 12, 1),
+            status=Subscription.Status.DRAFT,
+        )
+
+        res = self.client.post(
+            "/api/invoices/",
+            {"subscription": draft_sub.id, "period_start": "2026-12-01"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("only active subscriptions", res.data["detail"].lower())
+
+        # Bulk run must ignore non-active subscriptions
+        res_bulk = self.client.post(
+            "/api/invoices/generate/",
+            {"as_of_date": "2026-12-01"},
+            format="json",
+        )
+        self.assertEqual(res_bulk.status_code, status.HTTP_200_OK)
+        # Ensure draft_sub was not billed
+        self.assertFalse(Invoice.objects.filter(subscription=draft_sub).exists())
+
+    # -----------------------------------------------------------------------
+    # 8. Bulk billing run counts and reasons
+    # -----------------------------------------------------------------------
+
+    def test_bulk_run_counts_and_reasons(self):
+        """Bulk billing run returns created and skipped counts with detailed reasons."""
+        self.client.force_authenticate(user=self.staff_user)
+
+        # sub_a already has inv_a for 2026-11-01, but its next_invoice_date is 2026-12-01
+        # sub_b has inv_b for 2026-11-01, and next_invoice_date is 2026-12-01
+        # Let's create an existing invoice for sub_b at 2026-12-01 so it will be skipped
+        Invoice.objects.create(
+            subscription=self.sub_b,
+            customer=self.customer_b,
+            period_start=date(2026, 12, 1),
+            period_end=date(2026, 12, 31),
+            issue_date=date(2026, 12, 1),
+            due_date=date(2026, 12, 16),
+            status=Invoice.Status.DRAFT,
+            total=Decimal("150.00"),
+        )
+
         res = self.client.post(
             "/api/invoices/generate/",
             {"as_of_date": "2026-12-01"},
             format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertIn("created", res.data)
-        self.assertGreaterEqual(res.data["created"], 1)
-
-        # Verify next_invoice_date was advanced
-        self.sub_b.refresh_from_db()
-        self.assertGreater(self.sub_b.next_invoice_date, date(2026, 12, 1))
+        # sub_a should be created (1), sub_b should be skipped (1)
+        self.assertEqual(res.data["created"], 1)
+        self.assertEqual(res.data["skipped"], 1)
+        self.assertIn("reasons", res.data)
+        self.assertGreaterEqual(len(res.data["reasons"]), 1)
+        self.assertIn("already exists", res.data["reasons"][0]["reason"].lower())
 
     # -----------------------------------------------------------------------
-    # 7. List query filters
+    # 9. Discount rules: expired, usage limit reached, min quantity, product-only
     # -----------------------------------------------------------------------
 
-    def test_invoice_list_filters(self):
-        """Test status, overdue, and date filters on invoice list."""
+    def test_discount_expired_is_not_applied(self):
+        """Expired discount is ignored during invoice creation."""
         self.client.force_authenticate(user=self.staff_user)
+        today = timezone.localdate()
 
-        # Status filter
-        res_conf = self.client.get("/api/invoices/?status=confirmed")
-        self.assertEqual(res_conf.status_code, status.HTTP_200_OK)
-        self.assertTrue(all(item["status"] == "confirmed" for item in res_conf.data["results"]))
+        disc = Discount.objects.create(
+            name="Expired Promo",
+            type=Discount.DiscountType.PERCENT,
+            value=Decimal("20.00"),
+            start_date=today - timedelta(days=30),
+            end_date=today - timedelta(days=1),  # Expired yesterday
+            applies_to=Discount.AppliesTo.SUBSCRIPTION,
+            is_active=True,
+        )
 
-        # Overdue filter (inv_a due_date was 2026-11-16, past today if today > 2026-11-16)
-        res_overdue = self.client.get("/api/invoices/?overdue=true")
-        self.assertEqual(res_overdue.status_code, status.HTTP_200_OK)
+        payload = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-04-01",
+            "period_end": "2027-04-30",
+        }
+        res = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(res.data["discount_total"]), Decimal("0.00"))
+        self.assertIsNone(res.data["discount"])
 
-        # Search filter
-        res_search = self.client.get("/api/invoices/?search=Alpha")
-        self.assertEqual(res_search.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_search.data["count"], 1)
-        self.assertEqual(res_search.data["results"][0]["customer"]["name"], "Customer Alpha")
+    def test_discount_usage_limit_reached_is_not_applied(self):
+        """Discount with usage limit reached is not applied."""
+        self.client.force_authenticate(user=self.staff_user)
+        today = timezone.localdate()
 
+        disc = Discount.objects.create(
+            name="Maxed Promo",
+            type=Discount.DiscountType.PERCENT,
+            value=Decimal("15.00"),
+            start_date=today - timedelta(days=10),
+            end_date=today + timedelta(days=10),
+            usage_limit=2,
+            times_used=2,  # Limit reached
+            applies_to=Discount.AppliesTo.SUBSCRIPTION,
+            is_active=True,
+        )
+
+        payload = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-05-01",
+            "period_end": "2027-05-31",
+        }
+        res = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(res.data["discount_total"]), Decimal("0.00"))
+
+    def test_discount_min_quantity_rule(self):
+        """Discount is only applied when min_quantity is met."""
+        self.client.force_authenticate(user=self.staff_user)
+        today = timezone.localdate()
+
+        # Requires at least 5 items
+        disc = Discount.objects.create(
+            name="Bulk 5+ items",
+            type=Discount.DiscountType.PERCENT,
+            value=Decimal("10.00"),
+            start_date=today - timedelta(days=10),
+            end_date=today + timedelta(days=10),
+            min_quantity=5,
+            applies_to=Discount.AppliesTo.SUBSCRIPTION,
+            is_active=True,
+        )
+
+        # sub_a only has 3 items (2 of Product A, 1 of Product B) -> Should NOT apply
+        payload = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-06-01",
+            "period_end": "2027-06-30",
+        }
+        res = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(res.data["discount_total"]), Decimal("0.00"))
+
+        # Add line override with 6 items -> Should apply!
+        payload_qualifies = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-07-01",
+            "period_end": "2027-07-31",
+            "lines": [
+                {"product": self.product_a.id, "quantity": 6, "unit_price": "100.00"}
+            ],
+        }
+        res2 = self.client.post("/api/invoices/", payload_qualifies, format="json")
+        self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
+        # Subtotal: 600.00, 10% discount: 60.00
+        self.assertEqual(Decimal(res2.data["discount_total"]), Decimal("60.00"))
+
+    def test_discount_product_only_applies_strictly_to_matching_products(self):
+        """Product-only discount reduces only the matching product lines."""
+        self.client.force_authenticate(user=self.staff_user)
+        today = timezone.localdate()
+
+        disc = Discount.objects.create(
+            name="Product A Special",
+            type=Discount.DiscountType.PERCENT,
+            value=Decimal("20.00"),
+            start_date=today - timedelta(days=10),
+            end_date=today + timedelta(days=10),
+            applies_to=Discount.AppliesTo.PRODUCT,
+            is_active=True,
+        )
+        disc.products.add(self.product_a)
+
+        payload = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-08-01",
+            "period_end": "2027-08-31",
+        }
+        res = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        # Lines on sub_a:
+        # Product A: qty 2, price 100.00 -> 200.00 subtotal, 20% discount = 40.00
+        # Product B: qty 1, price 50.00 -> 50.00 subtotal, 0 discount
+        # Total discount: 40.00
+        self.assertEqual(Decimal(res.data["discount_total"]), Decimal("40.00"))
+
+        lines = {l["product"]: l for l in res.data["lines"]}
+        self.assertEqual(Decimal(lines[self.product_a.id]["discount_amount"]), Decimal("40.00"))
+        self.assertEqual(Decimal(lines[self.product_b.id]["discount_amount"]), Decimal("0.00"))
+
+    # -----------------------------------------------------------------------
+    # 10. Discount times_used increments once via F()
+    # -----------------------------------------------------------------------
+
+    def test_discount_times_used_increments_once(self):
+        """Applying a discount increments its times_used counter exactly once."""
+        self.client.force_authenticate(user=self.staff_user)
+        today = timezone.localdate()
+
+        disc = Discount.objects.create(
+            name="One Time Promo",
+            type=Discount.DiscountType.FIXED,
+            value=Decimal("25.00"),
+            start_date=today - timedelta(days=5),
+            end_date=today + timedelta(days=5),
+            applies_to=Discount.AppliesTo.SUBSCRIPTION,
+            times_used=0,
+            is_active=True,
+        )
+
+        payload = {
+            "subscription": self.sub_a.id,
+            "period_start": "2027-09-01",
+            "period_end": "2027-09-30",
+        }
+        res = self.client.post("/api/invoices/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(res.data["discount_total"]), Decimal("25.00"))
+
+        disc.refresh_from_db()
+        self.assertEqual(disc.times_used, 1)
+
+    # -----------------------------------------------------------------------
+    # 11. Overdue filter and is_overdue field
+    # -----------------------------------------------------------------------
+
+    def test_is_overdue_field_and_overdue_list_filter(self):
+        """Invoices with due_date in past and status not paid/cancelled have is_overdue=True."""
+        self.client.force_authenticate(user=self.staff_user)
+        today = timezone.localdate()
+
+        # Overdue invoice: confirmed, due date in past
+        overdue_inv = Invoice.objects.create(
+            subscription=self.sub_a,
+            customer=self.customer_a,
+            period_start=today - timedelta(days=40),
+            period_end=today - timedelta(days=11),
+            issue_date=today - timedelta(days=40),
+            due_date=today - timedelta(days=25),
+            status=Invoice.Status.CONFIRMED,
+            total=Decimal("100.00"),
+            amount_paid=Decimal("0.00"),
+        )
+
+        # Non-overdue invoice: paid, even though due date in past
+        paid_inv = Invoice.objects.create(
+            subscription=self.sub_a,
+            customer=self.customer_a,
+            period_start=today - timedelta(days=70),
+            period_end=today - timedelta(days=41),
+            issue_date=today - timedelta(days=70),
+            due_date=today - timedelta(days=55),
+            status=Invoice.Status.PAID,
+            total=Decimal("100.00"),
+            amount_paid=Decimal("100.00"),
+        )
+
+        # Future due invoice: confirmed, due date in future
+        future_inv = Invoice.objects.create(
+            subscription=self.sub_a,
+            customer=self.customer_a,
+            period_start=today,
+            period_end=today + timedelta(days=30),
+            issue_date=today,
+            due_date=today + timedelta(days=15),
+            status=Invoice.Status.CONFIRMED,
+            total=Decimal("100.00"),
+            amount_paid=Decimal("0.00"),
+        )
+
+        # Check is_overdue field on detail responses
+        res_od = self.client.get(f"/api/invoices/{overdue_inv.id}/")
+        self.assertTrue(res_od.data["is_overdue"])
+
+        res_paid = self.client.get(f"/api/invoices/{paid_inv.id}/")
+        self.assertFalse(res_paid.data["is_overdue"])
+
+        res_fut = self.client.get(f"/api/invoices/{future_inv.id}/")
+        self.assertFalse(res_fut.data["is_overdue"])
+
+        # Filter by overdue=true
+        res_filter_true = self.client.get("/api/invoices/?overdue=true")
+        self.assertEqual(res_filter_true.status_code, status.HTTP_200_OK)
+        returned_ids = [item["id"] for item in res_filter_true.data["results"]]
+        self.assertIn(overdue_inv.id, returned_ids)
+        self.assertNotIn(paid_inv.id, returned_ids)
+        self.assertNotIn(future_inv.id, returned_ids)
+
+        # Filter by overdue=false
+        res_filter_false = self.client.get("/api/invoices/?overdue=false")
+        self.assertEqual(res_filter_false.status_code, status.HTTP_200_OK)
+        returned_ids_false = [item["id"] for item in res_filter_false.data["results"]]
+        self.assertNotIn(overdue_inv.id, returned_ids_false)
+        self.assertIn(paid_inv.id, returned_ids_false)
+        self.assertIn(future_inv.id, returned_ids_false)

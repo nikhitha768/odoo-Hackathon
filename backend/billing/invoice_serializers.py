@@ -2,9 +2,11 @@
 
 from decimal import Decimal
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework import serializers
 
 from billing.models import Invoice, InvoiceLine, Payment
+from catalog.models import Discount
 from subscriptions.models import Subscription
 
 User = get_user_model()
@@ -55,13 +57,16 @@ class InvoicePaymentSerializer(serializers.ModelSerializer):
 class InvoiceSerializer(serializers.ModelSerializer):
     """
     Invoice representation matching docs/api.md.
-    Nested customer: {id, name}, subscription ID, nested lines, and nested payments.
+    Nested customer: {id, name}, subscription ID, nested lines, nested payments,
+    and computed is_overdue indicator.
     """
 
     customer = InvoiceCustomerSerializer(read_only=True)
     subscription = serializers.PrimaryKeyRelatedField(read_only=True)
+    discount = serializers.PrimaryKeyRelatedField(read_only=True)
     lines = InvoiceLineSerializer(many=True, read_only=True)
     payments = InvoicePaymentSerializer(many=True, read_only=True)
+    is_overdue = serializers.SerializerMethodField()
 
     class Meta:
         model = Invoice
@@ -71,6 +76,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "status",
             "subscription",
             "customer",
+            "discount",
             "period_start",
             "period_end",
             "issue_date",
@@ -81,10 +87,21 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "tax_total",
             "total",
             "amount_paid",
+            "is_overdue",
             "lines",
             "payments",
         ]
         read_only_fields = fields
+
+    def get_is_overdue(self, obj):
+        """Returns True if due date has passed and status is not paid/cancelled."""
+        if not obj.due_date:
+            return False
+        today = timezone.localdate()
+        return (
+            obj.due_date < today
+            and obj.status not in [Invoice.Status.PAID, Invoice.Status.CANCELLED]
+        )
 
 
 class InvoiceCreateLineInputSerializer(serializers.Serializer):
@@ -109,6 +126,9 @@ class InvoiceCreateSerializer(serializers.Serializer):
     period_end = serializers.DateField(required=False)
     issue_date = serializers.DateField(required=False)
     due_date = serializers.DateField(required=False)
+    discount = serializers.PrimaryKeyRelatedField(
+        queryset=Discount.objects.all(), required=False, allow_null=True
+    )
     lines = InvoiceCreateLineInputSerializer(many=True, required=False)
 
     # Any client-provided totals are explicitly write-only and ignored on server
@@ -122,4 +142,4 @@ class InvoiceGenerateSerializer(serializers.Serializer):
     """Input serializer for batch invoice generation."""
 
     as_of_date = serializers.DateField(required=False)
-
+    date = serializers.DateField(required=False)
