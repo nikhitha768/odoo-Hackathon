@@ -21,7 +21,7 @@ class EndToEndFlowTest(APITestCase):
         call_command("seed", stdout=StringIO())
 
     def test_customer_forbidden_on_admin_endpoints(self):
-        """Verify that customer accounts receive 403 Forbidden on admin-only endpoints."""
+        """Verify that customer accounts receive 403 Forbidden on admin and staff-only endpoints."""
         # Login as customer Asha
         login_res = self.client.post(
             "/api/auth/login/",
@@ -82,6 +82,19 @@ class EndToEndFlowTest(APITestCase):
             f"Customer should get 403 on POST /api/discounts/, got {discount_res.status_code}",
         )
 
+        # Customer gets 403 on each report endpoint (Staff+ only)
+        for report_url in [
+            "/api/reports/summary/",
+            "/api/reports/overdue-invoices/",
+            "/api/reports/revenue-by-month/",
+        ]:
+            rep_res = self.client.get(report_url)
+            self.assertEqual(
+                rep_res.status_code,
+                status.HTTP_403_FORBIDDEN,
+                f"Customer should get 403 on GET {report_url}, got {rep_res.status_code}",
+            )
+
     def test_full_business_flow(self):
         """
         Walk the full lifecycle:
@@ -95,6 +108,7 @@ class EndToEndFlowTest(APITestCase):
         8. Confirm the invoice
         9. Record payment through /api/payments/
         10. Assert invoice ends up paid
+        11. Call every report endpoint as admin and assert 200 with contract response shapes
         """
         # Step 1: Login as Admin
         login_res = self.client.post(
@@ -294,3 +308,58 @@ class EndToEndFlowTest(APITestCase):
             Decimal(str(inv_detail_res.data.get("total"))),
             "Invoice amount_paid does not equal total.",
         )
+
+        # Step 11: Call every report endpoint as admin and assert 200 with contract response shapes
+        # 11a: GET /api/reports/summary/
+        summary_res = self.client.get("/api/reports/summary/")
+        self.assertEqual(
+            summary_res.status_code,
+            status.HTTP_200_OK,
+            f"GET /api/reports/summary/ failed: {summary_res.data}",
+        )
+        expected_summary_keys = {
+            "active_subscriptions",
+            "total_invoiced",
+            "revenue_received",
+            "outstanding",
+            "overdue_count",
+            "overdue_amount",
+        }
+        self.assertTrue(
+            expected_summary_keys.issubset(summary_res.data.keys()),
+            f"Report summary missing expected keys. Expected {expected_summary_keys}, got {summary_res.data.keys()}",
+        )
+        self.assertIsInstance(summary_res.data["active_subscriptions"], int)
+        self.assertIsInstance(summary_res.data["overdue_count"], int)
+
+        # 11b: GET /api/reports/overdue-invoices/
+        overdue_res = self.client.get("/api/reports/overdue-invoices/")
+        self.assertEqual(
+            overdue_res.status_code,
+            status.HTTP_200_OK,
+            f"GET /api/reports/overdue-invoices/ failed: {overdue_res.data}",
+        )
+        self.assertIn("count", overdue_res.data)
+        self.assertIn("results", overdue_res.data)
+        self.assertIsInstance(overdue_res.data["results"], list)
+        for item in overdue_res.data["results"]:
+            self.assertIn("days_overdue", item)
+            self.assertIn("customer", item)
+            self.assertIn("due_date", item)
+
+        # 11c: GET /api/reports/revenue-by-month/
+        rev_res = self.client.get("/api/reports/revenue-by-month/")
+        self.assertEqual(
+            rev_res.status_code,
+            status.HTTP_200_OK,
+            f"GET /api/reports/revenue-by-month/ failed: {rev_res.data}",
+        )
+        self.assertIsInstance(
+            rev_res.data,
+            list,
+            f"Expected list response for revenue-by-month, got {type(rev_res.data)}",
+        )
+        for item in rev_res.data:
+            self.assertIn("month", item)
+            self.assertIn("invoiced", item)
+            self.assertIn("received", item)
