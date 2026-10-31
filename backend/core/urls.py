@@ -10,4 +10,5 @@ urlpatterns = [
     path("api/", include("subscriptions.urls")),
     path("api/", include("billing.invoice_urls")),
     path("api/", include("billing.urls")),
+    path("api/", include("core.report_urls")),
 ]
