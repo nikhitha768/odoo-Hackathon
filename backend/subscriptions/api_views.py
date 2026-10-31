@@ -40,7 +40,7 @@ class SubscriptionListCreateView(generics.ListCreateAPIView):
         qs = Subscription.objects.select_related(
             "customer", "plan", "template", "created_by"
         ).prefetch_related(
-            "lines", "lines__product", "lines__variant", "lines__tax"
+            "lines", "lines__product", "lines__product__default_tax", "lines__variant", "lines__tax"
         )
 
         role = getattr(user, "role", None)
@@ -101,7 +101,7 @@ class SubscriptionDetailView(generics.RetrieveUpdateAPIView):
         qs = Subscription.objects.select_related(
             "customer", "plan", "template", "created_by"
         ).prefetch_related(
-            "lines", "lines__product", "lines__variant", "lines__tax"
+            "lines", "lines__product", "lines__product__default_tax", "lines__variant", "lines__tax"
         )
 
         role = getattr(user, "role", None)
@@ -169,7 +169,7 @@ class SubscriptionTransitionView(generics.GenericAPIView):
 
         refreshed_instance = (
             Subscription.objects.select_related("customer", "plan", "template", "created_by")
-            .prefetch_related("lines", "lines__product", "lines__variant", "lines__tax")
+            .prefetch_related("lines", "lines__product", "lines__product__default_tax", "lines__variant", "lines__tax")
             .get(pk=subscription.pk)
         )
         serializer = SubscriptionSerializer(refreshed_instance)

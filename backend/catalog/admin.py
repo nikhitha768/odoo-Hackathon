@@ -27,6 +27,7 @@ class ProductVariantInline(admin.TabularInline):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
+    list_select_related = ("default_tax",)
     list_display = ("name", "type", "sales_price", "cost_price", "default_tax", "is_active")
     list_filter = ("type", "is_active", "default_tax")
     search_fields = ("name", "notes")
@@ -35,6 +36,7 @@ class ProductAdmin(admin.ModelAdmin):
 
 @admin.register(ProductVariant)
 class ProductVariantAdmin(admin.ModelAdmin):
+    list_select_related = ("product",)
     list_display = ("product", "attribute", "value", "extra_price")
     list_filter = ("attribute", "product")
     search_fields = ("attribute", "value", "product__name")
@@ -63,6 +65,7 @@ class QuotationTemplateLineInline(admin.TabularInline):
 
 @admin.register(QuotationTemplate)
 class QuotationTemplateAdmin(admin.ModelAdmin):
+    list_select_related = ("plan",)
     list_display = ("name", "plan", "validity_days")
     list_filter = ("plan",)
     search_fields = ("name",)
@@ -71,6 +74,7 @@ class QuotationTemplateAdmin(admin.ModelAdmin):
 
 @admin.register(QuotationTemplateLine)
 class QuotationTemplateLineAdmin(admin.ModelAdmin):
+    list_select_related = ("template", "product", "variant")
     list_display = ("template", "product", "variant", "quantity", "unit_price")
     list_filter = ("template", "product")
 

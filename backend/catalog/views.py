@@ -70,10 +70,12 @@ class PlanViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         today = date.today()
         # Auto-close plans whose available_to has passed
-        Plan.objects.filter(
+        expired_plans = Plan.objects.filter(
             auto_close=True,
             available_to__lt=today,
-        ).exclude(status=Plan.PlanStatus.CLOSED).update(status=Plan.PlanStatus.CLOSED)
+        ).exclude(status=Plan.PlanStatus.CLOSED)
+        if expired_plans.exists():
+            expired_plans.update(status=Plan.PlanStatus.CLOSED)
 
         queryset = Plan.objects.all().order_by("id")
         status_param = self.request.query_params.get("status")

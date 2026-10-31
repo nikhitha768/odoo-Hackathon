@@ -60,6 +60,7 @@ class Subscription(models.Model):
             models.Index(fields=["status"]),
             models.Index(fields=["customer"]),
             models.Index(fields=["next_invoice_date"]),
+            models.Index(fields=["created_at"]),
         ]
 
     def __str__(self):

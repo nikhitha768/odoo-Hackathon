@@ -12,6 +12,7 @@ class SubscriptionLineInline(admin.TabularInline):
 
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
+    list_select_related = ("customer", "plan")
     list_display = (
         "number",
         "customer",
@@ -31,6 +32,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
 
 @admin.register(SubscriptionLine)
 class SubscriptionLineAdmin(admin.ModelAdmin):
+    list_select_related = ("subscription", "product", "variant", "tax")
     list_display = (
         "subscription",
         "product",

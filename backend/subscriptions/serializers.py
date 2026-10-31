@@ -87,25 +87,31 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def _calculate_totals(self, obj):
+        if not hasattr(obj, "_cached_subtotal") or not hasattr(obj, "_cached_tax_total"):
+            subtotal = Decimal("0.00")
+            tax_sum = Decimal("0.00")
+            for line in obj.lines.all():
+                line_amount = Decimal(str(line.amount))
+                subtotal += line_amount
+                tax = line.tax or getattr(line.product, "default_tax", None)
+                if tax:
+                    rate = Decimal(str(tax.rate_percent))
+                    tax_sum += (line_amount * rate / Decimal("100.00"))
+            obj._cached_subtotal = subtotal
+            obj._cached_tax_total = tax_sum.quantize(Decimal("0.01"))
+        return obj._cached_subtotal, obj._cached_tax_total
+
     def get_subtotal(self, obj):
-        subtotal = sum(
-            Decimal(str(line.amount))
-            for line in obj.lines.all()
-        )
+        subtotal, _ = self._calculate_totals(obj)
         return f"{subtotal:.2f}"
 
     def get_tax_total(self, obj):
-        tax_sum = Decimal("0.00")
-        for line in obj.lines.select_related("tax", "product__default_tax"):
-            tax = line.tax or getattr(line.product, "default_tax", None)
-            if tax:
-                rate = Decimal(str(tax.rate_percent))
-                tax_sum += (Decimal(str(line.amount)) * rate / Decimal("100.00"))
-        return f"{tax_sum.quantize(Decimal('0.01')):.2f}"
+        _, tax_total = self._calculate_totals(obj)
+        return f"{tax_total:.2f}"
 
     def get_total(self, obj):
-        subtotal = Decimal(self.get_subtotal(obj))
-        tax_total = Decimal(self.get_tax_total(obj))
+        subtotal, tax_total = self._calculate_totals(obj)
         return f"{(subtotal + tax_total):.2f}"
 
 

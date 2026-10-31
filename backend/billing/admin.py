@@ -18,6 +18,7 @@ class PaymentInline(admin.TabularInline):
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
+    list_select_related = ("subscription", "customer")
     list_display = (
         "number",
         "subscription",
@@ -53,6 +54,7 @@ class InvoiceLineAdmin(admin.ModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
+    list_select_related = ("invoice", "recorded_by")
     list_display = (
         "id",
         "invoice",

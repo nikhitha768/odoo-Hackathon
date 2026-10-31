@@ -28,7 +28,7 @@ class Invoice(models.Model):
     )
     period_start = models.DateField()
     period_end = models.DateField()
-    issue_date = models.DateField()
+    issue_date = models.DateField(db_index=True)
     due_date = models.DateField()
     status = models.CharField(
         max_length=20,
@@ -148,6 +148,7 @@ class Payment(models.Model):
         max_length=20,
         choices=PaymentMethod.choices,
         default=PaymentMethod.BANK_TRANSFER,
+        db_index=True,
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     payment_date = models.DateField(default=timezone.now)

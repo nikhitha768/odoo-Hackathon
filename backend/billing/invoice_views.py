@@ -132,7 +132,7 @@ def create_invoice_from_subscription_data(
                 }
             )
     else:
-        for sub_line in subscription.lines.select_related("product", "product__default_tax", "tax"):
+        for sub_line in subscription.lines.all():
             qty = sub_line.quantity
             unit_price = Decimal(str(sub_line.unit_price))
             line_subtotal = (Decimal(qty) * unit_price).quantize(Decimal("0.01"))
@@ -179,8 +179,10 @@ def create_invoice_from_subscription_data(
         amount_paid=Decimal("0.00"),
     )
 
-    for line_kwargs in lines_to_create:
-        InvoiceLine.objects.create(invoice=invoice, **line_kwargs)
+    InvoiceLine.objects.bulk_create([
+        InvoiceLine(invoice=invoice, **line_kwargs)
+        for line_kwargs in lines_to_create
+    ])
 
     return invoice
 
@@ -345,7 +347,7 @@ class InvoiceGenerateView(generics.GenericAPIView):
                 next_invoice_date__lte=as_of_date,
             )
             .select_related("customer", "plan")
-            .prefetch_related("lines", "lines__product", "lines__tax")
+            .prefetch_related("lines", "lines__product", "lines__product__default_tax", "lines__tax")
         )
 
         created = 0

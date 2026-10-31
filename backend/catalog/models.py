@@ -95,10 +95,11 @@ class Plan(models.Model):
         max_length=20,
         choices=BillingPeriod.choices,
         default=BillingPeriod.MONTHLY,
+        db_index=True,
     )
     min_quantity = models.PositiveIntegerField(default=1)
     available_from = models.DateField(null=True, blank=True)
-    available_to = models.DateField(null=True, blank=True)
+    available_to = models.DateField(null=True, blank=True, db_index=True)
     auto_close = models.BooleanField(default=False)
     allow_early_close = models.BooleanField(default=False)
     allow_pause = models.BooleanField(default=False)
@@ -107,6 +108,7 @@ class Plan(models.Model):
         max_length=20,
         choices=PlanStatus.choices,
         default=PlanStatus.ACTIVE,
+        db_index=True,
     )
 
     class Meta:

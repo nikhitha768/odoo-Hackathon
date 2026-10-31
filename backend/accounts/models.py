@@ -58,10 +58,11 @@ class User(AbstractBaseUser, PermissionsMixin):
         max_length=20,
         choices=Role.choices,
         default=Role.CUSTOMER,
+        db_index=True,
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
-    created_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     objects = UserManager()
 
