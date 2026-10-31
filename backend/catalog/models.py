@@ -117,6 +117,14 @@ class Plan(models.Model):
     def __str__(self):
         return self.name
 
+    def check_auto_close(self):
+        """If auto_close is True and available_to has passed, mark status as closed."""
+        if self.auto_close and self.available_to and self.status != self.PlanStatus.CLOSED:
+            from datetime import date
+            if date.today() > self.available_to:
+                self.status = self.PlanStatus.CLOSED
+                self.save(update_fields=["status"])
+
 
 class QuotationTemplate(models.Model):
     """Preset template for generating quotations with default product lines."""
