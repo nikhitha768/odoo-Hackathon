@@ -12,6 +12,7 @@ import {
 } from '@mui/material'
 import MailOutlinedIcon from '@mui/icons-material/MailOutlined'
 import client from '../../api/client'
+import { USE_MOCK } from '../../mock'
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('')
@@ -110,16 +111,18 @@ export default function ForgotPassword() {
           {successMessage && (
             <Alert severity="success" sx={{ mb: 2 }}>
               <Typography variant="body2">{successMessage}</Typography>
-              <Box sx={{ mt: 1 }}>
-                <Link
-                  component={RouterLink}
-                  to="/reset-password?uid=12&token=mock-token-demo"
-                  variant="caption"
-                  fontWeight={600}
-                >
-                  [Demo shortcut: Test Reset Password page]
-                </Link>
-              </Box>
+              {USE_MOCK && (
+                <Box sx={{ mt: 1 }}>
+                  <Link
+                    component={RouterLink}
+                    to="/reset-password?uid=12&token=mock-token-demo"
+                    variant="caption"
+                    fontWeight={600}
+                  >
+                    [Demo shortcut: Test Reset Password page]
+                  </Link>
+                </Box>
+              )}
             </Alert>
           )}
 

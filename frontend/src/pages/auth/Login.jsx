@@ -19,6 +19,7 @@ import Visibility from '@mui/icons-material/Visibility'
 import VisibilityOff from '@mui/icons-material/VisibilityOff'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import { useAuth } from '../../auth'
+import { USE_MOCK } from '../../mock'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -240,35 +241,39 @@ export default function Login() {
             </Box>
           </Box>
 
-          <Divider sx={{ my: 3 }}>
-            <Typography variant="caption" color="text.secondary">
-              DEMO ACCOUNTS (1-CLICK)
-            </Typography>
-          </Divider>
+          {USE_MOCK && (
+            <>
+              <Divider sx={{ my: 3 }}>
+                <Typography variant="caption" color="text.secondary">
+                  DEMO ACCOUNTS (1-CLICK)
+                </Typography>
+              </Divider>
 
-          <Stack direction="row" spacing={1} justifyContent="center">
-            <Chip
-              label="Admin"
-              color="primary"
-              size="small"
-              clickable
-              onClick={() => handleQuickDemo('admin@example.com', 'Admin@123')}
-            />
-            <Chip
-              label="Staff"
-              color="info"
-              size="small"
-              clickable
-              onClick={() => handleQuickDemo('staff@example.com', 'Staff@123')}
-            />
-            <Chip
-              label="Customer"
-              color="success"
-              size="small"
-              clickable
-              onClick={() => handleQuickDemo('asha@example.com', 'Customer@123')}
-            />
-          </Stack>
+              <Stack direction="row" spacing={1} justifyContent="center">
+                <Chip
+                  label="Admin"
+                  color="primary"
+                  size="small"
+                  clickable
+                  onClick={() => handleQuickDemo('admin@example.com', 'Admin@123')}
+                />
+                <Chip
+                  label="Staff"
+                  color="info"
+                  size="small"
+                  clickable
+                  onClick={() => handleQuickDemo('staff@example.com', 'Staff@123')}
+                />
+                <Chip
+                  label="Customer"
+                  color="success"
+                  size="small"
+                  clickable
+                  onClick={() => handleQuickDemo('asha@example.com', 'Customer@123')}
+                />
+              </Stack>
+            </>
+          )}
         </Paper>
       </Box>
     </Container>

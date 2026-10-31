@@ -22,10 +22,12 @@ export default function ResetPassword() {
   const [searchParams] = useSearchParams()
   const params = useParams()
 
-  // Support both query params (?uid=...&token=...) and route params (/:uid/:token)
-  const uid = searchParams.get('uid') || params.uid || ''
-  const token = searchParams.get('token') || params.token || ''
+  // Support query params (?uid=...&token=...), route params (/:uid/:token), or direct input
+  const initialUid = searchParams.get('uid') || params.uid || ''
+  const initialToken = searchParams.get('token') || params.token || ''
 
+  const [uid, setUid] = useState(initialUid)
+  const [token, setToken] = useState(initialToken)
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
@@ -36,6 +38,14 @@ export default function ResetPassword() {
 
   const validate = () => {
     const errors = {}
+
+    if (!uid.trim()) {
+      errors.uid = 'Reset UID is required (paste from reset email).'
+    }
+
+    if (!token.trim()) {
+      errors.token = 'Reset Token is required (paste from reset email).'
+    }
 
     if (!newPassword) {
       errors.newPassword = 'New password is required.'
@@ -61,11 +71,6 @@ export default function ResetPassword() {
     e.preventDefault()
     if (!validate()) return
 
-    if (!uid || !token) {
-      setGeneralError('Invalid or missing reset token from URL.')
-      return
-    }
-
     setLoading(true)
     setGeneralError('')
     setSuccessMessage('')
@@ -73,27 +78,36 @@ export default function ResetPassword() {
     try {
       // POST /api/auth/password-reset/confirm/ with { uid, token, new_password }
       const response = await client.post('/auth/password-reset/confirm/', {
-        uid,
-        token,
+        uid: uid.trim(),
+        token: token.trim(),
         new_password: newPassword,
       })
-      setSuccessMessage(response.data?.detail || 'Password updated.')
+      setSuccessMessage(response.data?.detail || 'Password updated successfully.')
     } catch (err) {
       const serverData = err.response?.data
       if (serverData && typeof serverData === 'object') {
+        const nextErrors = {}
         if (serverData.detail) {
           setGeneralError(serverData.detail)
-        } else if (serverData.new_password) {
-          setFieldErrors({
-            newPassword: Array.isArray(serverData.new_password)
-              ? serverData.new_password[0]
-              : serverData.new_password,
-          })
-        } else {
-          setGeneralError('Failed to reset password. The link may have expired.')
+        }
+        if (serverData.new_password) {
+          nextErrors.newPassword = Array.isArray(serverData.new_password)
+            ? serverData.new_password[0]
+            : serverData.new_password
+        }
+        if (serverData.uid) {
+          nextErrors.uid = Array.isArray(serverData.uid) ? serverData.uid[0] : serverData.uid
+        }
+        if (serverData.token) {
+          nextErrors.token = Array.isArray(serverData.token) ? serverData.token[0] : serverData.token
+        }
+        if (Object.keys(nextErrors).length > 0) {
+          setFieldErrors((prev) => ({ ...prev, ...nextErrors }))
+        } else if (!serverData.detail) {
+          setGeneralError('Invalid or expired token. Please request a new link.')
         }
       } else {
-        setGeneralError('Failed to reset password. Please request a new link.')
+        setGeneralError('Failed to reset password. Please verify the reset link or request a new one.')
       }
     } finally {
       setLoading(false)
@@ -140,16 +154,9 @@ export default function ResetPassword() {
               Set New Password
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              Enter your new credentials below
+              Enter your UID, Token and your new password
             </Typography>
           </Box>
-
-          {!uid || !token ? (
-            <Alert severity="warning" sx={{ mb: 2 }}>
-              Reset token or UID missing from URL. Please ensure you clicked the full link
-              from your email.
-            </Alert>
-          ) : null}
 
           {generalError && (
             <Alert severity="error" sx={{ mb: 2 }}>
@@ -177,11 +184,44 @@ export default function ResetPassword() {
                 margin="normal"
                 required
                 fullWidth
+                id="uid"
+                label="Reset UID"
+                name="uid"
+                value={uid}
+                onChange={(e) => {
+                  setUid(e.target.value)
+                  if (fieldErrors.uid) setFieldErrors((prev) => ({ ...prev, uid: '' }))
+                  if (generalError) setGeneralError('')
+                }}
+                error={Boolean(fieldErrors.uid)}
+                helperText={fieldErrors.uid || 'From URL or email: Reset UID: {uid}'}
+              />
+
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                id="token"
+                label="Reset Token"
+                name="token"
+                value={token}
+                onChange={(e) => {
+                  setToken(e.target.value)
+                  if (fieldErrors.token) setFieldErrors((prev) => ({ ...prev, token: '' }))
+                  if (generalError) setGeneralError('')
+                }}
+                error={Boolean(fieldErrors.token)}
+                helperText={fieldErrors.token || 'From URL or email: Reset Token: {token}'}
+              />
+
+              <TextField
+                margin="normal"
+                required
+                fullWidth
                 id="newPassword"
                 label="New Password"
                 name="newPassword"
                 type={showPassword ? 'text' : 'password'}
-                autoFocus
                 value={newPassword}
                 onChange={(e) => {
                   setNewPassword(e.target.value)
@@ -234,7 +274,7 @@ export default function ResetPassword() {
                 fullWidth
                 variant="contained"
                 size="large"
-                disabled={loading || !uid || !token}
+                disabled={loading}
                 sx={{ mt: 2, py: 1.2, fontWeight: 600 }}
               >
                 {loading ? 'Updating...' : 'Update Password'}
@@ -258,4 +298,3 @@ export default function ResetPassword() {
     </Container>
   )
 }
-

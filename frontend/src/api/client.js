@@ -3,7 +3,7 @@ import { USE_MOCK, mockAdapter } from '../mock/index.js'
 
 const baseURL =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) ||
-  'http://localhost:8000/api'
+  'http://localhost:8080/api'
 
 const client = axios.create({
   baseURL,
